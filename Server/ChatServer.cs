@@ -35,22 +35,51 @@ public class ChatServer
 
     public static async Task StartAsync()
     {
-        using UdpClient udp = new UdpClient(
-            new IPEndPoint(IPAddress.Any, 5000));
+        TcpListener listener = new TcpListener(IPAddress.Any, 5000);
+        listener.Start();
 
-        Console.WriteLine("UDP-сервер запущено. Порт: 5000");
+        Console.WriteLine("TCP-сервер запущено. Порт: 5000");
 
         while (true)
         {
-            UdpReceiveResult result = await udp.ReceiveAsync();
+            TcpClient client = await listener.AcceptTcpClientAsync();
+
+            Console.WriteLine("Клієнт підключився!");
+
+            _ = HandleClientAsync(client);
+        }
+    }
+
+    private static async Task HandleClientAsync(TcpClient client)
+    {
+        using (client)
+        {
+            using NetworkStream stream = client.GetStream();
+
+            using StreamReader reader = new StreamReader(
+                stream, Encoding.UTF8, false, 1024, true);
+
+            using StreamWriter writer = new StreamWriter(
+                stream, new UTF8Encoding(false), 1024, true);
 
             try
             {
-                string json = Encoding.UTF8.GetString(result.Buffer);
-                Request request = JsonSerializer.Deserialize<Request>(json)!;
+                Console.WriteLine("Очікуємо запит...");
+
+                string? json = await reader.ReadLineAsync();
+
+                Console.WriteLine("Отримано запит: " + json);
+
+                if (string.IsNullOrEmpty(json))
+                    return;
+
+                Request request = JsonSerializer.Deserialize<Request>(json)
+                    ?? throw new Exception("Некоректний запит.");
 
                 Response response = new Response();
-                string clientIP = result.RemoteEndPoint.Address.MapToIPv4().ToString();
+
+                string clientIP = ((IPEndPoint)client.Client.RemoteEndPoint!)
+                    .Address.MapToIPv4().ToString();
 
                 if (request.Action == "CreateChat")
                 {
@@ -67,7 +96,8 @@ public class ChatServer
                     using SqlCommand command = new SqlCommand(sql, connection);
                     command.Parameters.AddWithValue("@Name", request.Name);
 
-                    int chatId = (int)await command.ExecuteScalarAsync();
+                    int chatId = Convert.ToInt32(
+                        await command.ExecuteScalarAsync());
 
                     int userId = await GetOrCreateUser(
                         connection, clientIP, request.UserName);
@@ -94,7 +124,7 @@ public class ChatServer
                     await connection.OpenAsync();
 
                     string sql = @"
-                        SELECT c.Id, c.Name
+                        SELECT DISTINCT c.Id, c.Name
                         FROM Chats c
                         JOIN ChatParticipants cp ON cp.ChatId = c.Id
                         JOIN Users u ON u.Id = cp.UserId
@@ -104,14 +134,15 @@ public class ChatServer
                     using SqlCommand command = new SqlCommand(sql, connection);
                     command.Parameters.AddWithValue("@IP", clientIP);
 
-                    using SqlDataReader reader = await command.ExecuteReaderAsync();
+                    using SqlDataReader dbReader =
+                        await command.ExecuteReaderAsync();
 
-                    while (await reader.ReadAsync())
+                    while (await dbReader.ReadAsync())
                     {
                         response.Chats.Add(new ChatInfo
                         {
-                            Id = reader.GetInt32(0),
-                            Name = reader.GetString(1)
+                            Id = dbReader.GetInt32(0),
+                            Name = dbReader.GetString(1)
                         });
                     }
 
@@ -134,10 +165,13 @@ public class ChatServer
                     {
                         command.Parameters.AddWithValue("@ChatId", request.ChatId);
 
-                        using SqlDataReader reader = await command.ExecuteReaderAsync();
+                        using SqlDataReader dbReader =
+                            await command.ExecuteReaderAsync();
 
-                        while (await reader.ReadAsync())
-                            response.Participants.Add(reader.GetString(0));
+                        while (await dbReader.ReadAsync())
+                        {
+                            response.Participants.Add(dbReader.GetString(0));
+                        }
                     }
 
                     sql = @"
@@ -151,13 +185,14 @@ public class ChatServer
                     {
                         command.Parameters.AddWithValue("@ChatId", request.ChatId);
 
-                        using SqlDataReader reader = await command.ExecuteReaderAsync();
+                        using SqlDataReader dbReader =
+                            await command.ExecuteReaderAsync();
 
-                        while (await reader.ReadAsync())
+                        while (await dbReader.ReadAsync())
                         {
                             response.Messages.Add(
-                                $"[{reader.GetDateTime(2):dd.MM.yyyy HH:mm}] " +
-                                $"{reader.GetString(0)}: {reader.GetString(1)}");
+                                $"[{dbReader.GetDateTime(2):dd.MM.yyyy HH:mm}] " +
+                                $"{dbReader.GetString(0)}: {dbReader.GetString(1)}");
                         }
                     }
 
@@ -181,7 +216,8 @@ public class ChatServer
 
                         string sql = @"
                             IF NOT EXISTS (
-                                SELECT 1 FROM ChatParticipants
+                                SELECT 1
+                                FROM ChatParticipants
                                 WHERE ChatId = @ChatId AND UserId = @UserId
                             )
                             INSERT INTO ChatParticipants (ChatId, UserId)
@@ -208,7 +244,8 @@ public class ChatServer
 
                     string sql = @"
                         IF EXISTS (
-                            SELECT 1 FROM ChatParticipants
+                            SELECT 1
+                            FROM ChatParticipants
                             WHERE ChatId = @ChatId AND UserId = @UserId
                         )
                         BEGIN
@@ -232,14 +269,35 @@ public class ChatServer
                     response.Message = "Невідома команда.";
                 }
 
-                byte[] data = Encoding.UTF8.GetBytes(
-                    JsonSerializer.Serialize(response));
+                string responseJson = JsonSerializer.Serialize(response);
 
-                await udp.SendAsync(data, result.RemoteEndPoint);
+                Console.WriteLine("Відповідь: " + responseJson);
+
+                await writer.WriteLineAsync(responseJson);
+                await writer.FlushAsync();
+
+                Console.WriteLine("Відповідь надіслано клієнту.");
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Помилка: " + ex.Message);
+                Console.WriteLine("ПОМИЛКА: " + ex);
+
+                try
+                {
+                    Response errorResponse = new Response
+                    {
+                        Message = "Помилка сервера: " + ex.Message
+                    };
+
+                    string errorJson = JsonSerializer.Serialize(errorResponse);
+
+                    await writer.WriteLineAsync(errorJson);
+                    await writer.FlushAsync();
+                }
+                catch (Exception sendEx)
+                {
+                    Console.WriteLine("Помилка відповіді: " + sendEx.Message);
+                }
             }
         }
     }
@@ -267,7 +325,7 @@ public class ChatServer
                 await update.ExecuteNonQueryAsync();
             }
 
-            return (int)result;
+            return Convert.ToInt32(result);
         }
 
         sql = @"
@@ -276,10 +334,12 @@ public class ChatServer
             VALUES (@Name, @IP)";
 
         using SqlCommand insert = new SqlCommand(sql, connection);
+
         insert.Parameters.AddWithValue(
-            "@Name", userName == "" ? ip : userName);
+            "@Name", string.IsNullOrWhiteSpace(userName) ? ip : userName);
+
         insert.Parameters.AddWithValue("@IP", ip);
 
-        return (int)await insert.ExecuteScalarAsync();
+        return Convert.ToInt32(await insert.ExecuteScalarAsync());
     }
 }

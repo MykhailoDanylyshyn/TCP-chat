@@ -1,3 +1,4 @@
+
 using System;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -12,8 +13,8 @@ public partial class Form1 : Form
         InitializeComponent();
 
         userName = Interaction.InputBox(
-    "Введіть ваше ім'я:",
-    "Ім'я користувача");
+            "Введіть ваше ім'я:",
+            "Ім'я користувача");
 
         if (string.IsNullOrWhiteSpace(userName))
         {
@@ -30,12 +31,13 @@ public partial class Form1 : Form
     {
         try
         {
-            await ChatClient.SendRequest("GetChats");
-            labelStatus.Text = "Підключено";
+            await LoadChats();
+            buttonLoadChats.Text = "Відновити чат";
         }
         catch
         {
             labelStatus.Text = "Не підключено";
+            buttonLoadChats.Text = "Отримати список чатів";
         }
     }
 
@@ -55,7 +57,6 @@ public partial class Form1 : Form
 
     private async void buttonCreateChat_Click(object sender, EventArgs e)
     {
-
         string name = Interaction.InputBox(
             "Введіть назву чату:",
             "Створення чату");
@@ -66,11 +67,12 @@ public partial class Form1 : Form
         try
         {
             var response = await ChatClient.SendRequest(
-    "CreateChat",
-    name,
-    userName: userName);
+                "CreateChat",
+                name,
+                userName: userName);
 
             labelStatus.Text = "Підключено";
+
             MessageBox.Show(response.Message);
 
             await LoadChats();
@@ -78,7 +80,9 @@ public partial class Form1 : Form
         catch (Exception ex)
         {
             labelStatus.Text = "Не підключено";
-            MessageBox.Show("Сервер недоступний: " + ex.Message);
+
+            MessageBox.Show(
+                "Помилка створення чату:\n" + ex.Message);
         }
     }
 
@@ -94,18 +98,20 @@ public partial class Form1 : Form
         try
         {
             await LoadChats();
+
             if (listBoxChats.Items.Count == 0)
             {
                 listBoxChats.Items.Add("Створених чатів немає");
             }
+
             buttonLoadChats.Text = "Відновити чат";
         }
         catch (Exception ex)
         {
             labelStatus.Text = "Не підключено";
-            MessageBox.Show("Сервер недоступний: " + ex.Message);
+
+            MessageBox.Show(
+                "Помилка завантаження чатів:\n" + ex.Message);
         }
     }
-
-    
 }

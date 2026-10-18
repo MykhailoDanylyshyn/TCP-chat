@@ -7,7 +7,7 @@ namespace UPD_chat;
 
 public class ChatClient
 {
-    private const string ServerIP = "26.176.184.159";
+    private const string ServerIP = "127.0.0.1";
     private const int Port = 5000;
 
     public class Request
@@ -42,7 +42,17 @@ public class ChatClient
         string text = "",
         string userName = "")
     {
-        using UdpClient client = new UdpClient();
+        using TcpClient client = new TcpClient();
+
+        await client.ConnectAsync(ServerIP, Port);
+
+        using NetworkStream stream = client.GetStream();
+
+        using StreamReader reader = new StreamReader(
+            stream, Encoding.UTF8, false, 1024, true);
+
+        using StreamWriter writer = new StreamWriter(
+            stream, new UTF8Encoding(false), 1024, true);
 
         Request request = new Request
         {
@@ -54,20 +64,21 @@ public class ChatClient
             Text = text
         };
 
-        byte[] data = Encoding.UTF8.GetBytes(
-            JsonSerializer.Serialize(request));
+        string json = JsonSerializer.Serialize(request);
 
-        await client.SendAsync(data, data.Length, ServerIP, Port);
+        Console.WriteLine("Надсилаємо запит: " + json);
 
-        using CancellationTokenSource timeout =
-            new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await writer.WriteLineAsync(json);
+        await writer.FlushAsync();
 
-        UdpReceiveResult result =
-            await client.ReceiveAsync(timeout.Token);
+        string? responseJson = await reader.ReadLineAsync();
 
-        string json = Encoding.UTF8.GetString(result.Buffer);
+        Console.WriteLine("Відповідь сервера: " + responseJson);
 
-        return JsonSerializer.Deserialize<Response>(json)
+        if (string.IsNullOrEmpty(responseJson))
+            throw new Exception("Сервер не надіслав відповідь.");
+
+        return JsonSerializer.Deserialize<Response>(responseJson)
             ?? throw new Exception("Некоректна відповідь сервера.");
     }
 }
